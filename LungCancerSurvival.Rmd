@@ -1,0 +1,278 @@
+---
+title: "LungCancer_Survival_NeminChen"
+author: "Nemin"
+date: "11/28/2022"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load_libraries, include=FALSE}
+library(tableone)
+library(caret)
+library(pROC)
+library(ggplot2)
+library(gridExtra)
+library(grid)
+library(tidyverse)
+library(NbClust)
+library(gplots)
+library(MASS)
+```
+
+###Import Data
+```{r load_data}
+clinical<-read.csv(file="/Users/neminchen/OneDrive/Stats/codes/clinical.csv")
+str(clinical)
+table(clinical$Outcome, useNA = "always")
+table(clinical$Survival.Months, useNA = "always")
+
+table(clinical$Age, useNA = "always") 
+table(clinical$Grade, useNA = "always") #needs cleaning--too many missing
+table(clinical$Num.Primaries, useNA = "always")
+table(clinical$T, useNA = "always") #needs cleaning--too many missing
+table(clinical$N, useNA = "always") #needs cleaning--too many missing
+table(clinical$M, useNA = "always") #needs cleaning--too many missing
+table(clinical$Radiation, useNA = "always") #needs cleaning
+table(clinical$Stage, useNA = "always")
+table(clinical$Primary.Site, useNA = "always")
+table(clinical$Histology, useNA = "always")
+table(clinical$Tumor.Size, useNA = "always") #needs cleaning--too many missing
+table(clinical$Num.Mutated.Genes, useNA = "always")
+table(clinical$Num.Mutations, useNA = "always")
+
+genomics<-read.csv(file="/Users/neminchen/OneDrive/Stats/codes/genomics.csv")
+str(genomics)
+
+table(genomics$Gene)
+```
+
+###Clean the Dataset
+```{r clean_data}
+clinical[,c("Grade")][clinical[,c("Grade")] == 9] <- NA
+clinical[,c("T")][clinical[,c("T")] == "UNK"] <- NA
+clinical[,c("N")][clinical[,c("N")] == 'NULL'] <- NA
+clinical[,c("M")][clinical[,c("M")] == 'NULL'] <- NA
+clinical[,c("Radiation")][clinical[,c("Radiation")] == 5] <- 1
+clinical$Radiation<-factor(as.factor(clinical$Radiation), levels=c(0,1))
+clinical[,c("Tumor.Size")][clinical[,c("Tumor.Size")] == 'NULL'] <- NA
+
+clinical$deathin1yr<-NA
+for (i in 1:nrow(clinical)) {
+  if (clinical$Outcome[i]=="Dead" & clinical$Survival.Months[i]<=12) {
+    clinical$deathin1yr[i]=1
+  }
+  else  {
+    clinical$deathin1yr[i]=0
+  }
+  
+}
+clinical$deathin1yr <- factor(clinical$deathin1yr, levels=c(0,1), labels=c("No", "Yes"))
+
+```
+
+
+
+###Descriptive Analyses: Explore the Variables
+```{r data_visual}
+var <- c("Age", "Grade", "Num.Primaries", "T", "N", "M",
+         "Radiation", "Stage", "Primary.Site", "Histology",
+         "Tumor.Size", "Num.Mutated.Genes", "Num.Mutations")
+
+t <- CreateTableOne(vars = var, strata = "deathin1yr", data = clinical)
+print(t, nonnormal=c("Grade", "Num.Primaries", "N", "M",
+                     "Tumor.Size", "Num.Mutated.Genes", "Num.Mutations"),
+         exact=c( "Num.Primaries", "T", "Radiation", "Stage", "Primary.Site", "Histology"), quote=T)
+
+densityplot <- function(data, indep_var) {
+  mydata <- data[!is.na(data[,indep_var]), c(indep_var, "deathin1yr")]	
+  
+  mydata$y <- mydata[,indep_var]
+  
+  myrange.u <- max(mydata[,indep_var]) - min(mydata[,indep_var])
+  mybuffer.u <- 0.20 * myrange.u
+  
+  myrange.t <- max(mydata$y) - min(mydata$y)
+  mybuffer.t <- 0.20 * myrange.t
+  myn <- nrow(mydata)
+  
+  p <- ggplot(mydata, aes(get(indep_var), fill = factor(deathin1yr), color = factor(deathin1yr))) +
+    geom_density(alpha = 0.2) +	
+    scale_color_manual(values = c("black","black"), guide = FALSE) +
+    scale_fill_manual(name = "",
+                      values = c("#0000FF66","#FF000066"), 
+                      labels = c("Survive Over 1 Year","Death in 1 Year"))  + 
+    xlab("") + ylab("") + 
+    ggtitle(indep_var, sub = " ") + 
+    scale_x_continuous(limits = c(min(mydata[,indep_var]) - mybuffer.u, max(mydata[,indep_var]) + mybuffer.u )) +
+    theme(panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(),
+          panel.background = element_blank(), 
+          axis.line = element_line(colour = "black"),
+          panel.border = element_rect(colour = "black", fill=NA, size=1),
+          plot.title = element_text(face = "bold", size = 12, hjust = 0.5),
+          plot.subtitle = element_text(hjust = 0.5, size = 12),
+          legend.text = element_text(size=12),
+          legend.position = "bottom",
+          legend.direction = "horizontal")
+  return(p)
+}
+
+p1 <- densityplot(clinical, colnames(clinical)[4])
+p2 <- densityplot(clinical, colnames(clinical)[5])
+p3 <- densityplot(clinical, colnames(clinical)[15])
+p4 <- densityplot(clinical, colnames(clinical)[16])
+
+
+grid_arrange_shared_legend <- function(..., 
+                                       ncol = length(list(...)),
+                                       nrow = 1,
+                                       position = c("bottom", "right")){
+  plots <- list(...)
+  position <- match.arg(position)
+  g <-
+    ggplotGrob(plots[[1]] + theme(legend.position = position))$grobs
+  legend <- g[[which(sapply(g, function(x)
+    x$name) == "guide-box")]]
+  lheight <- sum(legend$height)
+  lwidth <- sum(legend$width)
+  gl <- lapply(plots, function(x)
+    x + theme(legend.position = "none"))
+  gl <- c(gl, ncol = ncol, nrow = nrow)
+  
+  combined <- switch(
+    position,
+    "bottom" = arrangeGrob(
+      do.call(arrangeGrob, gl),
+      legend,
+      ncol = 1,
+      heights = unit.c(unit(1, "npc") - lheight, lheight)
+    ),
+    "right" = arrangeGrob(
+      do.call(arrangeGrob, gl),
+      legend,
+      ncol = 2,
+      widths = unit.c(unit(1, "npc") - lwidth, lwidth)
+    )
+  )
+  
+  grid.newpage()
+  grid.draw(combined)
+  
+  # return gtable invisibly
+  invisible(combined)
+}  
+
+grid_arrange_shared_legend(p1, p2, p3, p4, ncol=2, nrow=2)
+
+#Any clustering of gene mutation?
+genomics_wide<-genomics%>%mutate(mutation=1)%>%pivot_wider(names_from = Gene, values_from = mutation)
+genomics_wide[,2:51][is.na(genomics_wide[,2:51])] <- 0
+dat<-genomics_wide%>%dplyr::select(-c("ID"))
+CH<-NbClust(data=dat,min.nc = 2, max.nc = 10,method="kmeans",index="ch")
+plot(2:10,CH$All.index,type="o",xlab="number of clusters",ylab="CH index","cex.lab"=1.5,cex=2.5)
+a<-kmeans(dat,nstart=10,centers = 3)
+cluster<-a$cluster
+table(cluster)
+
+row_distance = dist(dat, method = "euclidean")
+row_cluster = hclust(row_distance, method = "ward.D")
+col_distance = dist(t(dat), method = "euclidean")
+col_cluster = hclust(col_distance, method = "ward.D")
+#par(cex.main=0.8)
+#colnames(per_MiRNA)<-cancerType1
+heatmap.2(as.matrix(dat),
+          #RowSideColors = c(    # grouping row-variables into different
+          # rep("red", num_sample1),   # categories, Measurement 1-3: green    # Measurement 4-6: blue
+          #  rep("blue", num_sample1)),    # Measurement 7-10: red
+          main = paste("heatmap of leukemia data",sep=""),
+          #xlab=cancerType1,# heat map title
+          notecol="black",      # change font color of cell labels to black
+          density.info="none",  # turns off density plot inside color legend
+          trace="none",
+          # turns off trace lines inside the heat map
+          margins =c(12,9),
+          RowSideColors = as.character(cluster),
+          col=greenred,       # use on color palette defined earlier
+          #dendrogram="both",     # only draw a row dendrogram
+          Rowv=as.dendrogram(row_cluster),
+          Colv =as.dendrogram(col_cluster))   
+
+cluster_result<-cbind(genomics_wide%>%dplyr::select("ID"), cluster)
+cluster_result$cluster<-as.factor(cluster_result$cluster)
+
+final_data<-merge(clinical, cluster_result, by.x="ID", by.y="ID")%>%dplyr::select(-c("ID", "Outcome", "Survival.Months", 
+                                                                              "Grade", "T", "N", "M", "Tumor.Size", #missing values
+                                                                              "Num.Primaries", "Radiation"))  ##only one category in outcome=1
+final_data<-final_data[complete.cases(final_data),]
+
+table(final_data$deathin1yr, final_data$cluster)
+```
+
+---
+############################## 
+---
+
+###1. Please walk us through how you cleaned up this dataset. Do you see any interesting trends?
+- Replaced all the values indicating a missing with NA
+- Created a binary variable of whether or not dead within 1 year based on the survival outcome and survival month variable.
+- Clustered the patients into three classes based on the mutations genes using k means clustering. Merged the class info with main dataset. 
+- Deleted multiple variables with large proportion of missingness before modeling.
+- Deleted multiple variables with only one category among non survivals.
+- Include rows with complete data.
+
+- According to table 1 and density plot, survival and non survivals differ the most significantly in age, grade, stage, primary site, histology, and the cluster based on types of gene mutation. Patients who are around 62 or 76, have a higher tumor grade, have a IIIA or IVB tumor stage at diagnosis, have a primary tumor location at Left Hilar or Right Hilar, have a Adenocarcinoma or Large-cell carcinoma tumor, and who are in class 1, are more likely to die within one year of diagnosis. 
+
+---
+############################## 
+---
+
+###2. Tell us how you decided which features to use for your model. Are there any new features it might be productive to engineer from the current features?
+- I decide to use age, stage, primary site, histology, number of mutated genes, number of mutations, and class based on type of gene mutations. 
+- The reasons for choosing the features are:
+  1. They have none or limited missing data.
+  2. There are more than 1 values for each outcome group, so they are eligible to be included in the modeling.
+  3. They are related to the survival outcome from the descriptive analyses.
+- I used k means clustering analysis to define the class of patients based on where the genes were found to have mutation. It looks like that not the number of mutation but the site of mutation that has an impact on the survival outcome. 
+
+###Prediction Modeling
+```{r LDA}
+plot.new()
+set.seed(1)
+n<-nrow(final_data)
+index.train<-sample(1:n,size = round(0.6*n))
+index.test<-(1:n)[-index.train]
+data_train<-final_data[index.train,]
+data_test<-final_data[index.test,]
+#Linear Discriminant Analysis
+lda.fit=lda(deathin1yr~.,data=data_train)
+lda.fit
+#plot(lda.fit)
+lda.pred=predict(lda.fit, data_test)
+table(data_test$deathin1yr, lda.pred$class)
+roc(as.factor(data_test$deathin1yr), lda.pred$x, plot=TRUE,print.auc=TRUE,col=2,legacy.axe=TRUE,add=TRUE,print.auc.y=0.5)
+```
+
+---
+############################## 
+---
+
+###3. Which algorithm did you use for the prediction and why?
+- Linear discriminant analysis. Reason is that we have a relatively large number of sample size compared with number of features. LDA has a good performance under this condition. The results of LDA are easier to interpret and more transparent compared to other machine learning methods designed for large features. LDA also has equal or better prediction performance compared with logistic regression. 
+
+---
+############################## 
+---
+
+###4. How did you assess the predictive model’s quality? Summarize your findings.
+- I used cross-validation to separate the original datasets into two parts, one for training the prediction and one for testing. Tihs is to avoid overfitting. I assessed the error rate, which is 100%. I also generated the ROC curve, the AUC is 1. The testing results both suggest perfect performance of the prediction model.
+
+---
+############################## 
+---
+
+###5. Next steps? What might you do with more time or access to additional data or expertise?
+- Since the performance of the model is already perfect, I would gather the existing features on greater number of patients, and also in a setting with patients more diversed in demographics (gender, race, social economic status, etc). I will replicate the prediction model to see if the model could be generalized to a larger population before deploying it in clinical setting. 
+
